@@ -1,0 +1,59 @@
+import 'package:flutter/material.dart';
+import '../api.dart';
+import '../i18n.dart';
+import '../main.dart';
+import '../widgets.dart';
+
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _mobile = TextEditingController();
+  final _otp = TextEditingController();
+  bool _sent = false;
+  bool _busy = false;
+
+  Future<void> _send() async {
+    setState(() => _busy = true);
+    try {
+      final r = await Api.post('auth/send-otp', {'mobile': _mobile.text.trim()});
+      if (r is Map && r['dev_otp'] != null) _otp.text = '${r['dev_otp']}';
+      setState(() => _sent = true);
+    } catch (e) {
+      if (mounted) toast(context, '$e');
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  Future<void> _verify() async {
+    setState(() => _busy = true);
+    try {
+      final r = await Api.post('auth/verify-otp', {'mobile': _mobile.text.trim(), 'otp': _otp.text.trim()}) as Map<String, dynamic>;
+      await Api.saveLogin('${r['token']}', r['user'] as Map<String, dynamic>);
+      await registerPush();
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) toast(context, '$e');
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text(t('Sign in'))),
+      body: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+          TextField(controller: _mobile, enabled: !_sent, keyboardType: TextInputType.phone, maxLength: 10, autofillHints: const [AutofillHints.telephoneNumberNational], decoration: InputDecoration(labelText: t('Mobile number'), prefixText: '+91 ', border: const OutlineInputBorder())),
+          if (_sent) TextField(controller: _otp, autofocus: true, keyboardType: TextInputType.number, maxLength: 6, autofillHints: const [AutofillHints.oneTimeCode], decoration: InputDecoration(labelText: t('Enter OTP'), border: const OutlineInputBorder())),
+          const SizedBox(height: 8),
+          FilledButton(onPressed: _busy ? null : (_sent ? _verify : _send), child: Text(t(_sent ? 'Verify' : 'Send OTP'))),
+        ]),
+      ),
+    );
+  }
+}
