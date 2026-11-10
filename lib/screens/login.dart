@@ -21,6 +21,7 @@ class _LoginScreenState extends State<LoginScreen> {
     try {
       final r = await Api.post('auth/send-otp', {'mobile': _mobile.text.trim()});
       if (r is Map && r['dev_otp'] != null) _otp.text = '${r['dev_otp']}';
+      if (r is Map && r['otp_test_mode'] == true) Api.config['otp_test_mode'] = true;
       setState(() => _sent = true);
     } catch (e) {
       if (mounted) toast(context, '$e');
@@ -49,9 +50,26 @@ class _LoginScreenState extends State<LoginScreen> {
         padding: const EdgeInsets.all(20),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           TextField(controller: _mobile, enabled: !_sent, keyboardType: TextInputType.phone, maxLength: 10, autofillHints: const [AutofillHints.telephoneNumberNational], decoration: InputDecoration(labelText: t('Mobile number'), prefixText: '+91 ', border: const OutlineInputBorder())),
+          if (_sent && Api.config['otp_test_mode'] == true)
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: brandLight.withOpacity(.18), borderRadius: BorderRadius.circular(10)),
+              child: Text(t('SMS is not active yet. Enter 1234 as OTP.')),
+            ),
           if (_sent) TextField(controller: _otp, autofocus: true, keyboardType: TextInputType.number, maxLength: 6, autofillHints: const [AutofillHints.oneTimeCode], decoration: InputDecoration(labelText: t('Enter OTP'), border: const OutlineInputBorder())),
           const SizedBox(height: 8),
           FilledButton(onPressed: _busy ? null : (_sent ? _verify : _send), child: Text(t(_sent ? 'Verify' : 'Send OTP'))),
+          if (_sent)
+            TextButton(
+              onPressed: _busy
+                  ? null
+                  : () => setState(() {
+                        _sent = false;
+                        _otp.clear();
+                      }),
+              child: Text(t('Change number')),
+            ),
         ]),
       ),
     );
