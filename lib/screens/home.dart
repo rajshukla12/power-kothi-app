@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import '../api.dart';
 import '../i18n.dart';
@@ -14,12 +13,8 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final _map = MapController();
   final _search = TextEditingController();
   LatLng _center = const LatLng(26.4499, 80.3319);
-  double _zoom = 11;
-  bool _moved = false;
-  bool _showList = false;
   bool _loading = true;
   String? _error;
   List<dynamic> _stations = [];
@@ -39,11 +34,6 @@ class _HomeScreenState extends State<HomeScreen> {
     if (here != null) _center = here;
     if (!mounted) return;
     setState(() {});
-    if (here != null) {
-      try {
-        _map.move(here, 12);
-      } catch (_) {}
-    }
     await _nearby(_center);
   }
 
@@ -60,7 +50,6 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _loading = true;
       _error = null;
-      _moved = false;
     });
     try {
       final rows = await Api.get('stations/nearby', {'lat': c.latitude, 'lng': c.longitude, 'radius': Api.config['default_radius_km'] ?? 10, ..._filters}) as List;
@@ -81,7 +70,6 @@ class _HomeScreenState extends State<HomeScreen> {
       final rows = await Api.get('stations/search', {'q': q.trim(), ..._filters}) as List;
       if (!mounted) return;
       setState(() => _stations = rows);
-      if (rows.isNotEmpty) _map.move(LatLng((rows.first['lat'] as num).toDouble(), (rows.first['lng'] as num).toDouble()), 12);
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     }
@@ -96,71 +84,8 @@ class _HomeScreenState extends State<HomeScreen> {
     await _nearby(_center);
   }
 
-  List<Marker> _markers() {
-    final out = <Marker>[];
-    for (final group in clusterStations(_stations, _zoom)) {
-      final first = group.first;
-      final p = LatLng((first['lat'] as num).toDouble(), (first['lng'] as num).toDouble());
-      if (group.length > 1 && _zoom < 13) {
-        out.add(Marker(
-          point: p,
-          width: 40,
-          height: 40,
-          child: GestureDetector(
-            onTap: () => _map.move(p, _zoom + 2),
-            child: CircleAvatar(backgroundColor: brandCoal, child: Text('${group.length}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700))),
-          ),
-        ));
-      } else {
-        for (final s in group) {
-          out.add(Marker(
-            point: LatLng((s['lat'] as num).toDouble(), (s['lng'] as num).toDouble()),
-            width: 34,
-            height: 34,
-            child: GestureDetector(
-              onTap: () => openStation(context, s['id'] as int),
-              child: Icon(Icons.location_on, size: 34, color: statusColor(s['status'] as String?)),
-            ),
-          ));
-        }
-      }
-    }
-    return out;
-  }
-
-  Widget _mapView() => Stack(children: [
-        FlutterMap(
-          mapController: _map,
-          options: MapOptions(
-            initialCenter: _center,
-            initialZoom: _zoom,
-            onMapEvent: (e) {
-              if (e is MapEventMoveEnd || e is MapEventFlingAnimationEnd || e is MapEventDoubleTapZoomEnd) {
-                setState(() {
-                  _center = e.camera.center;
-                  _zoom = e.camera.zoom;
-                  _moved = true;
-                });
-              }
-            },
-          ),
-          children: [
-            TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', userAgentPackageName: 'in.powerkothi.app'),
-            MarkerLayer(markers: _markers()),
-            SimpleAttributionWidget(source: Text('OpenStreetMap contributors')),
-          ],
-        ),
-        if (_moved)
-          Positioned(
-            top: 10,
-            left: 0,
-            right: 0,
-            child: Center(child: FilledButton.tonal(onPressed: () => _nearby(_center), child: Text(t('Search this area')))),
-          ),
-      ]);
-
   Widget _listView() {
-    if (_stations.isEmpty) return Message(t('No stations found here. Try a bigger radius or clear filters.'));
+    if (_stations.isEmpty) return _loading ? const SizedBox() : Message(t('No stations found here. Try a bigger radius or clear filters.'));
     return RefreshIndicator(
       onRefresh: () => _nearby(_center),
       child: ListView.separated(
@@ -184,7 +109,6 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         actions: [
           IconButton(tooltip: t('Filters'), onPressed: _openFilters, icon: Badge(isLabelVisible: _filters.isNotEmpty, child: const Icon(Icons.tune))),
-          IconButton(tooltip: t(_showList ? 'Map' : 'List'), onPressed: () => setState(() => _showList = !_showList), icon: Icon(_showList ? Icons.map : Icons.list)),
         ],
       ),
       floatingActionButton: FloatingActionButton.small(
@@ -196,7 +120,7 @@ class _HomeScreenState extends State<HomeScreen> {
             return;
           }
           _center = here;
-          _map.move(here, 12);
+          _search.clear();
           await _nearby(here);
         },
         child: const Icon(Icons.my_location),
@@ -204,7 +128,7 @@ class _HomeScreenState extends State<HomeScreen> {
       body: Column(children: [
         if (_loading) const LinearProgressIndicator(minHeight: 2),
         if (_error != null) MaterialBanner(content: Text(_error!), actions: [TextButton(onPressed: () => _nearby(_center), child: Text(t('Try again')))]),
-        Expanded(child: IndexedStack(index: _showList ? 1 : 0, children: [_mapView(), _listView()])),
+        Expanded(child: _listView()),
       ]),
     );
   }

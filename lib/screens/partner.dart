@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -11,26 +10,26 @@ import '../widgets.dart';
 
 /// Partner section: people who bring EV-charger sites earn money when the site goes live.
 /// API (all need login):
-///   GET  partner/dashboard        GET  partner/leads        GET partner/leads/{id}
-///   POST partner/leads (multipart) GET  partner/wallet       POST partner/payout-request
-///   PUT  partner/bank
+///   GET  partner/status   POST partner/join   GET partner/dashboard
+///   GET  partner/leads    POST partner/leads (multipart)   GET partner/leads/{id}
+///   GET  partner/wallet   POST partner/payout-request      PUT partner/bank
 
 // ---------------------------------------------------------------------------
 // Lead stages (keys must match the server)
 // ---------------------------------------------------------------------------
-const List<String> leadStages = ['submitted', 'survey_scheduled', 'feasibility_approved', 'agreement_signed', 'live'];
+const List<String> leadStages = ['new', 'verified', 'site_visit', 'agreement', 'installed'];
 
 String stageLabel(String? s) {
   switch (s) {
-    case 'submitted':
+    case 'new':
       return t('Submitted');
-    case 'survey_scheduled':
+    case 'verified':
       return t('Site survey scheduled');
-    case 'feasibility_approved':
+    case 'site_visit':
       return t('Feasibility approved');
-    case 'agreement_signed':
+    case 'agreement':
       return t('Agreement signed');
-    case 'live':
+    case 'installed':
       return t('Charger live');
     case 'rejected':
       return t('Not suitable');
@@ -40,12 +39,12 @@ String stageLabel(String? s) {
 
 Color stageColor(String? s) {
   switch (s) {
-    case 'live':
+    case 'installed':
       return const Color(0xFF1F9D6B);
-    case 'agreement_signed':
-    case 'feasibility_approved':
+    case 'agreement':
+    case 'site_visit':
       return const Color(0xFF2F6FDB);
-    case 'survey_scheduled':
+    case 'verified':
       return busyYellow;
     case 'rejected':
       return const Color(0xFFC4321C);
@@ -72,10 +71,19 @@ String rupees(dynamic v) {
   return '₹${parts.join(',')},$last3';
 }
 
-List<String> propertyTypes() {
+/// (key, label) pairs. Keys match station_leads.site_type on the server.
+List<(String, String)> propertyTypes() {
   final m = Api.masters['property_types'];
-  if (m is List && m.isNotEmpty) return [for (final x in m) x is Map ? '${x['name']}' : '$x'];
-  return const ['Petrol pump', 'Hotel / Restaurant / Dhaba', 'Mall / Shopping complex', 'Parking lot', 'Residential society', 'Office / IT park', 'Hospital', 'Open land / Plot', 'Shop / Showroom', 'Other'];
+  if (m is List && m.isNotEmpty) return [for (final x in m) if (x is Map) ('${x['key']}', '${x['name']}')];
+  return const [
+    ('petrol_pump', 'Petrol pump'),
+    ('hotel', 'Hotel / Restaurant / Dhaba'),
+    ('mall', 'Mall / Shopping complex'),
+    ('parking', 'Parking lot'),
+    ('owned', 'Own land / building'),
+    ('rented', 'Rented place'),
+    ('other', 'Other'),
+  ];
 }
 
 // ---------------------------------------------------------------------------
@@ -91,6 +99,9 @@ class _PartnerScreenState extends State<PartnerScreen> with SingleTickerProvider
   late final TabController _tabs = TabController(length: 4, vsync: this);
   final _dashKey = GlobalKey<_DashboardTabState>();
   final _leadsKey = GlobalKey<_LeadsTabState>();
+  Future<Map<String, dynamic>>? _status;
+
+  Future<Map<String, dynamic>> _loadStatus() async => (await Api.get('partner/status')) as Map<String, dynamic>;
 
   @override
   void dispose() {
@@ -107,11 +118,38 @@ class _PartnerScreenState extends State<PartnerScreen> with SingleTickerProvider
   @override
   Widget build(BuildContext context) {
     if (!Api.loggedIn) {
+      _status = null;
       return Scaffold(
         appBar: AppBar(title: Text(t('Partner'))),
         body: _PartnerIntro(onSignedIn: () => setState(() {})),
       );
     }
+    _status ??= _loadStatus();
+    return FutureBuilder<Map<String, dynamic>>(
+      future: _status,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return Scaffold(appBar: AppBar(title: Text(t('Partner'))), body: const Center(child: CircularProgressIndicator()));
+        }
+        if (snap.hasError) {
+          return Scaffold(
+            appBar: AppBar(title: Text(t('Partner'))),
+            body: Message('${snap.error}', action: t('Try again'), onTap: () => setState(() => _status = _loadStatus())),
+          );
+        }
+        final st = snap.data!;
+        if (st['is_partner'] != true) {
+          return Scaffold(
+            appBar: AppBar(title: Text(t('Partner'))),
+            body: _PartnerIntro(status: st, onSignedIn: () => setState(() => _status = _loadStatus())),
+          );
+        }
+        return _partnerTabs();
+      },
+    );
+  }
+
+  Widget _partnerTabs() {
     return Scaffold(
       appBar: AppBar(
         title: Text(t('Partner')),
@@ -141,12 +179,37 @@ class _PartnerScreenState extends State<PartnerScreen> with SingleTickerProvider
   }
 }
 
-class _PartnerIntro extends StatelessWidget {
+class _PartnerIntro extends StatefulWidget {
   final VoidCallback onSignedIn;
-  const _PartnerIntro({required this.onSignedIn});
+  final Map<String, dynamic>? status;
+  const _PartnerIntro({required this.onSignedIn, this.status});
+  @override
+  State<_PartnerIntro> createState() => _PartnerIntroState();
+}
+
+class _PartnerIntroState extends State<_PartnerIntro> {
+  late final _name = TextEditingController(text: '${Api.user?['name'] ?? ''}');
+  bool _busy = false;
+
+  Future<void> _join() async {
+    if (_name.text.trim().length < 2) {
+      toast(context, t('Enter your full name.'));
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      await Api.post('partner/join', {'name': _name.text.trim()});
+      widget.onSignedIn();
+    } catch (e) {
+      if (mounted) toast(context, '$e');
+    }
+    if (mounted) setState(() => _busy = false);
+  }
 
   @override
   Widget build(BuildContext context) {
+    final st = widget.status;
+    final perLead = numOf(st?['per_lead']);
     final steps = [
       (Icons.add_location_alt, t('Find a site'), t('A petrol pump, hotel, parking or society with space for an EV charger.')),
       (Icons.photo_camera, t('Submit in 1 minute'), t('Owner name, phone, property type, location and photos.')),
@@ -163,6 +226,10 @@ class _PartnerIntro extends StatelessWidget {
           Text(t('Earn with Power Kothi'), style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w800)),
           const SizedBox(height: 6),
           Text(t('Bring locations for new EV charging stations and earn for every charger that goes live.'), style: const TextStyle(color: Colors.white70, fontSize: 15)),
+          if (perLead > 0) ...[
+            const SizedBox(height: 10),
+            Text('${t('Earn up to')} ${rupees(perLead)} ${t('per charger')}', style: const TextStyle(color: brandLight, fontSize: 18, fontWeight: FontWeight.w800)),
+          ],
         ]),
       ),
       const SizedBox(height: 18),
@@ -175,14 +242,30 @@ class _PartnerIntro extends StatelessWidget {
           trailing: Icon(steps[i].$1, color: muted),
         ),
       const SizedBox(height: 16),
-      FilledButton.icon(
-        style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
-        icon: const Icon(Icons.login),
-        label: Text(t('Sign in to start')),
-        onPressed: () async {
-          if (await needLogin(context)) onSignedIn();
-        },
-      ),
+      if (st == null)
+        FilledButton.icon(
+          style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+          icon: const Icon(Icons.login),
+          label: Text(t('Sign in to start')),
+          onPressed: () async {
+            if (await needLogin(context)) widget.onSignedIn();
+          },
+        )
+      else if (st['can_join'] == true) ...[
+        TextField(controller: _name, textCapitalization: TextCapitalization.words, decoration: InputDecoration(labelText: t('Your full name'), prefixIcon: const Icon(Icons.person), border: const OutlineInputBorder())),
+        const SizedBox(height: 10),
+        FilledButton.icon(
+          style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
+          icon: _busy ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.handshake),
+          label: Text(t('Join as partner')),
+          onPressed: _busy ? null : _join,
+        ),
+      ] else
+        Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(color: ground, borderRadius: BorderRadius.circular(12)),
+          child: Text(t('Partner sign-up is by invitation. Ask Power Kothi to add your mobile number as a partner, then open this tab again.')),
+        ),
     ]);
   }
 }
@@ -239,7 +322,7 @@ class _DashboardTabState extends State<DashboardTab> with AutomaticKeepAliveClie
             _Pipeline(pipe: pipe),
             const SizedBox(height: 24),
             Text(t('Leaderboard'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-            Text(t('Partners with the most live chargers this month'), style: const TextStyle(color: muted)),
+            Text(t('Partners who earned the most this month'), style: const TextStyle(color: muted)),
             const SizedBox(height: 8),
             if (board.isEmpty) Padding(padding: const EdgeInsets.all(16), child: Text(t('No live chargers yet this month. Be the first!'), textAlign: TextAlign.center)),
             for (final r in board) _BoardRow(r as Map<String, dynamic>),
@@ -379,7 +462,6 @@ class _SubmitLocationTabState extends State<SubmitLocationTab> with AutomaticKee
   final _form = GlobalKey<FormState>();
   final _owner = TextEditingController();
   final _phone = TextEditingController();
-  final _map = MapController();
   String? _type;
   LatLng? _pin;
   bool _locating = false;
@@ -400,11 +482,6 @@ class _SubmitLocationTabState extends State<SubmitLocationTab> with AutomaticKee
       return;
     }
     setState(() => _pin = p);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      try {
-        _map.move(p, 17);
-      } catch (_) {}
-    });
   }
 
   Future<void> _takePhoto() async {
@@ -429,7 +506,7 @@ class _SubmitLocationTabState extends State<SubmitLocationTab> with AutomaticKee
     }
     setState(() => _busy = true);
     try {
-      await Api.upload('partner/leads', {
+      final res = await Api.upload('partner/leads', {
         'owner_name': _owner.text.trim(),
         'owner_phone': _phone.text.trim(),
         'property_type': _type!,
@@ -439,6 +516,8 @@ class _SubmitLocationTabState extends State<SubmitLocationTab> with AutomaticKee
         for (var i = 0; i < _photos.length; i++) 'photo${i + 1}': _photos[i].path,
       });
       if (!mounted) return;
+      final saved = res is Map ? numOf(res['photos_saved']).toInt() : _photos.length;
+      if (saved < _photos.length) toast(context, '${_photos.length - saved} ${t('photo(s) could not be saved. Our team may ask you for them.')}');
       await showDialog<void>(
         context: context,
         builder: (c) => AlertDialog(
@@ -496,7 +575,7 @@ class _SubmitLocationTabState extends State<SubmitLocationTab> with AutomaticKee
           value: _type,
           isExpanded: true,
           decoration: InputDecoration(prefixIcon: const Icon(Icons.apartment), border: const OutlineInputBorder(), hintText: t('Choose property type')),
-          items: [for (final p in propertyTypes()) DropdownMenuItem(value: p, child: Text(p))],
+          items: [for (final p in propertyTypes()) DropdownMenuItem(value: p.$1, child: Text(p.$2))],
           onChanged: (v) => setState(() => _type = v),
           validator: (v) => v == null ? t('Choose the property type.') : null,
         ),
@@ -508,25 +587,22 @@ class _SubmitLocationTabState extends State<SubmitLocationTab> with AutomaticKee
           icon: _locating ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.my_location),
           label: Text(_pin == null ? t('Use current location') : t('Update current location')),
         ),
-        if (_pin != null) ...[
-          const SizedBox(height: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: SizedBox(
-              height: 200,
-              child: FlutterMap(
-                mapController: _map,
-                options: MapOptions(initialCenter: _pin!, initialZoom: 17, onTap: (_, p) => setState(() => _pin = p)),
-                children: [
-                  TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', userAgentPackageName: 'in.powerkothi.app'),
-                  MarkerLayer(markers: [Marker(point: _pin!, width: 40, height: 40, child: const Icon(Icons.location_on, size: 40, color: brandCopper))]),
-                ],
+        if (_pin != null)
+          Container(
+            margin: const EdgeInsets.only(top: 8),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(color: const Color(0xFFE5F5EE), borderRadius: BorderRadius.circular(12)),
+            child: Row(children: [
+              const Icon(Icons.check_circle, color: Color(0xFF1F9D6B)),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(t('Location captured'), style: const TextStyle(fontWeight: FontWeight.w700)),
+                  Text('${_pin!.latitude.toStringAsFixed(6)}, ${_pin!.longitude.toStringAsFixed(6)}', style: const TextStyle(color: muted, fontSize: 12)),
+                ]),
               ),
-            ),
+            ]),
           ),
-          const SizedBox(height: 4),
-          Text('${_pin!.latitude.toStringAsFixed(6)}, ${_pin!.longitude.toStringAsFixed(6)}  ·  ${t('Tap the map to adjust the pin.')}', style: const TextStyle(color: muted, fontSize: 12)),
-        ],
         const SizedBox(height: 18),
         _label('4', '${t('Site photos')} (${_photos.length}/$maxPhotos)'),
         SizedBox(
@@ -635,7 +711,7 @@ class _LeadsTabState extends State<LeadsTab> with AutomaticKeepAliveClientMixin 
     final rows = _filter == 'all'
         ? _rows!
         : _filter == 'active'
-            ? _rows!.where((r) => r['status'] != 'live' && r['status'] != 'rejected').toList()
+            ? _rows!.where((r) => r['status'] != 'installed' && r['status'] != 'rejected').toList()
             : _rows!.where((r) => r['status'] == _filter).toList();
     return RefreshIndicator(
       onRefresh: reload,
@@ -643,7 +719,7 @@ class _LeadsTabState extends State<LeadsTab> with AutomaticKeepAliveClientMixin 
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(children: [
-            for (final f in [('all', t('All')), ('active', t('In progress')), ('live', t('Live')), ('rejected', t('Not suitable'))])
+            for (final f in [('all', t('All')), ('active', t('In progress')), ('installed', t('Live')), ('rejected', t('Not suitable'))])
               Padding(
                 padding: const EdgeInsets.only(right: 8),
                 child: ChoiceChip(label: Text(f.$2), selected: _filter == f.$1, onSelected: (_) => setState(() => _filter = f.$1)),
@@ -681,18 +757,13 @@ class _LeadCard extends StatelessWidget {
           padding: const EdgeInsets.all(12),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(10),
-                child: r['photo'] != null
-                    ? Image.network('${r['photo']}', width: 56, height: 56, fit: BoxFit.cover, errorBuilder: (_, __, ___) => _ph())
-                    : _ph(),
-              ),
+              ClipRRect(borderRadius: BorderRadius.circular(10), child: _ph()),
               const SizedBox(width: 12),
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text('${r['owner_name']}', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 16)),
                   Text('${r['property_type'] ?? ''}${r['city'] != null ? ' · ${r['city']}' : ''}', style: const TextStyle(color: muted)),
-                  Text('#${r['id']} · ${r['created_at'] ?? ''}', style: const TextStyle(color: muted, fontSize: 12)),
+                  Text('${r['lead_no'] ?? '#${r['id']}'} · ${r['created_at'] ?? ''}', style: const TextStyle(color: muted, fontSize: 12)),
                 ]),
               ),
               Container(
@@ -716,9 +787,12 @@ class _LeadCard extends StatelessWidget {
                 ],
               ]),
             ],
-            if (numOf(r['earning']) > 0) ...[
+            if (numOf(r['earned']) > 0 || (numOf(r['earning']) > 0 && st != 'rejected')) ...[
               const SizedBox(height: 8),
-              Text('${st == 'live' ? t('Earned') : t('You will earn')} ${rupees(r['earning'])}', style: TextStyle(color: st == 'live' ? const Color(0xFF1F9D6B) : muted, fontWeight: FontWeight.w700)),
+              Text(
+                numOf(r['earned']) > 0 ? '${t('Earned')} ${rupees(r['earned'])}${st != 'installed' && numOf(r['earning']) > numOf(r['earned']) ? ' ${t('of')} ${rupees(r['earning'])}' : ''}' : '${t('Earn up to')} ${rupees(r['earning'])}',
+                style: TextStyle(color: numOf(r['earned']) > 0 ? const Color(0xFF1F9D6B) : muted, fontWeight: FontWeight.w700),
+              ),
             ],
           ]),
         ),
@@ -736,19 +810,20 @@ class LeadDetailScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text('${t('Lead')} #$id')),
+      appBar: AppBar(title: Text(t('Lead details'))),
       body: Loader<Map<String, dynamic>>(
         load: () async => (await Api.get('partner/leads/$id')) as Map<String, dynamic>,
         builder: (l, reload) {
           final st = '${l['status']}';
           final timeline = ((l['timeline'] as List?) ?? []).cast<dynamic>();
-          final photos = ((l['photos'] as List?) ?? []).cast<dynamic>();
+          final photoCount = numOf(l['photo_count']).toInt();
           final byStage = {for (final x in timeline) '${x['status']}': x};
           final idx = leadStages.indexOf(st);
           return RefreshIndicator(
             onRefresh: () async => reload(),
             child: ListView(padding: const EdgeInsets.all(16), children: [
               Text('${l['owner_name']}', style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800)),
+              if (l['lead_no'] != null) Text('${l['lead_no']}', style: const TextStyle(color: muted, fontSize: 12)),
               Text('${l['property_type'] ?? ''}${l['address'] != null ? '\n${l['address']}' : ''}', style: const TextStyle(color: muted)),
               const SizedBox(height: 10),
               Wrap(spacing: 8, runSpacing: 8, children: [
@@ -760,15 +835,22 @@ class LeadDetailScreen extends StatelessWidget {
                     onPressed: () => launchUrl(Uri.parse('https://www.google.com/maps/search/?api=1&query=${l['lat']},${l['lng']}'), mode: LaunchMode.externalApplication),
                   ),
               ]),
-              if (numOf(l['earning']) > 0)
+              if (st != 'rejected' && (numOf(l['earned']) > 0 || numOf(l['earning']) > 0))
                 Container(
                   margin: const EdgeInsets.only(top: 14),
                   padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(color: st == 'live' ? const Color(0xFFE5F5EE) : ground, borderRadius: BorderRadius.circular(12)),
+                  decoration: BoxDecoration(color: numOf(l['earned']) > 0 ? const Color(0xFFE5F5EE) : ground, borderRadius: BorderRadius.circular(12)),
                   child: Row(children: [
-                    Icon(st == 'live' ? Icons.check_circle : Icons.currency_rupee, color: st == 'live' ? const Color(0xFF1F9D6B) : brandCopper),
+                    Icon(numOf(l['earned']) > 0 ? Icons.check_circle : Icons.currency_rupee, color: numOf(l['earned']) > 0 ? const Color(0xFF1F9D6B) : brandCopper),
                     const SizedBox(width: 10),
-                    Expanded(child: Text(st == 'live' ? '${rupees(l['earning'])} ${t('added to your wallet')}' : '${t('You will earn')} ${rupees(l['earning'])} ${t('when this charger goes live')}', style: const TextStyle(fontWeight: FontWeight.w700))),
+                    Expanded(
+                      child: Text(
+                        numOf(l['earned']) > 0
+                            ? '${rupees(l['earned'])} ${t('added to your wallet')}${st != 'installed' && numOf(l['earning']) > numOf(l['earned']) ? '. ${t('Up to')} ${rupees(numOf(l['earning']) - numOf(l['earned']))} ${t('more as it moves ahead.')}' : ''}'
+                            : '${t('Earn up to')} ${rupees(l['earning'])} ${t('as this lead moves to Charger live')}',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
                   ]),
                 ),
               const SizedBox(height: 20),
@@ -790,21 +872,12 @@ class LeadDetailScreen extends StatelessWidget {
                     current: i == idx,
                     last: i == leadStages.length - 1,
                   ),
-              if (photos.isNotEmpty) ...[
-                const SizedBox(height: 16),
-                Text(t('Site photos'), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800)),
-                const SizedBox(height: 8),
-                SizedBox(
-                  height: 110,
-                  child: ListView(scrollDirection: Axis.horizontal, children: [
-                    for (final p in photos)
-                      Padding(
-                        padding: const EdgeInsets.only(right: 8),
-                        child: ClipRRect(borderRadius: BorderRadius.circular(10), child: Image.network('$p', width: 110, height: 110, fit: BoxFit.cover, errorBuilder: (_, __, ___) => Container(width: 110, color: ground))),
-                      ),
-                  ]),
+              if (photoCount > 0)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.photo_library, color: muted),
+                  title: Text('$photoCount ${t('site photos sent')}'),
                 ),
-              ],
             ]),
           );
         },
@@ -1004,16 +1077,17 @@ class _PartnerWalletTabState extends State<PartnerWalletTab> with AutomaticKeepA
                   : '${bank['upi'] ?? ''}'.isNotEmpty && '${bank['account_no'] ?? ''}'.isEmpty
                       ? '${bank['upi']}'
                       : '${bank['account_name'] ?? ''} · ${_mask('${bank['account_no'] ?? ''}')} · ${bank['ifsc'] ?? ''}'),
-              trailing: TextButton(onPressed: () => _editBank(w), child: Text(bank == null ? t('Add') : t('Change'))),
+              trailing: w['bank_locked'] == true ? null : TextButton(onPressed: () => _editBank(w), child: Text(t('Add'))),
             ),
+            if (w['bank_locked'] == true) Text(t('To change your payout account, call Power Kothi support.'), style: const TextStyle(color: muted, fontSize: 12)),
             if (payouts.isNotEmpty) ...[
               const Divider(),
               Text(t('Payouts'), style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
               for (final p in payouts)
                 ListTile(
                   contentPadding: EdgeInsets.zero,
-                  leading: Icon(p['status'] == 'paid' ? Icons.check_circle : (p['status'] == 'rejected' ? Icons.cancel : Icons.schedule), color: p['status'] == 'paid' ? const Color(0xFF1F9D6B) : (p['status'] == 'rejected' ? Colors.red.shade700 : busyYellow)),
-                  title: Text(rupees(p['amount']), style: const TextStyle(fontWeight: FontWeight.w700)),
+                  leading: Icon(p['status'] == 'paid' ? Icons.check_circle : (p['status'] == 'pending' ? Icons.schedule : Icons.cancel), color: p['status'] == 'paid' ? const Color(0xFF1F9D6B) : (p['status'] == 'pending' ? busyYellow : Colors.red.shade700)),
+                  title: Text('${rupees(p['amount'])}${p['payout_no'] != null ? '  ·  ${p['payout_no']}' : ''}', style: const TextStyle(fontWeight: FontWeight.w700)),
                   subtitle: Text('${p['date'] ?? ''}${p['utr'] != null ? ' · UTR ${p['utr']}' : ''}${p['note'] != null ? '\n${p['note']}' : ''}'),
                   trailing: Text(_payoutWord('${p['status']}')),
                 ),
@@ -1046,6 +1120,8 @@ class _PartnerWalletTabState extends State<PartnerWalletTab> with AutomaticKeepA
         return t('Paid');
       case 'rejected':
         return t('Rejected');
+      case 'reversed':
+        return t('Reversed');
     }
     return t('Processing');
   }
