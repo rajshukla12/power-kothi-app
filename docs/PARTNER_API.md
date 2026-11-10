@@ -21,8 +21,8 @@ Admin > Settings > SMS OTP > "Test OTP 1234" (`otp_test_mode`, default 1). While
 | rejected | Rejected | - |
 
 ## Routes
-- `GET partner/status` → `{is_partner, can_join, partner:{name, emp_code, referral_code}, per_lead}`
-- `POST partner/join {name}` → creates the employee (only if Settings > Wallets > "App users can join as partner" = 1)
+- `GET partner/status` → `{is_partner, can_join, kyc_done, docs:{aadhaar, photo}, partner:{name, mobile, email, emp_code, referral_code}, per_lead}`
+- `POST partner/join` (multipart) `name, email (optional), aadhaar_front, aadhaar_back (optional), photo` → creates the employee if needed (only if Settings > Wallets > "App users can join as partner" = 1) and stores Aadhaar + photo as private employee documents. The app shows the dashboard only when `kyc_done` is true; an admin rejecting either document sends the partner back to this form.
 - `GET partner/dashboard` → `{total_earnings, wallet_balance, pending_earnings, live_count, per_lead, pipeline:{submitted, inspected, approved, live}, leaderboard:[{rank,name,city,earnings,live_count,me}], my_rank}`
 - `GET partner/leads` → `[{id, lead_no, owner_name, property_type, status, status_label, city, reject_reason, created_at, earned, earning}]`
 - `GET partner/leads/{id}` → lead + `owner_phone, address, lat, lng, photo_count, timeline:[{status, date, note}]`

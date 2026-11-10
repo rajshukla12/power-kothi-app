@@ -6,6 +6,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../api.dart';
 import '../i18n.dart';
+import '../main.dart';
 import '../widgets.dart';
 
 /// Partner section: people who bring EV-charger sites earn money when the site goes live.
@@ -87,189 +88,354 @@ List<(String, String)> propertyTypes() {
 }
 
 // ---------------------------------------------------------------------------
-// Partner tab
+// App flow after login: PartnerGate → RegisterScreen (first time) → PartnerHome
 // ---------------------------------------------------------------------------
-class PartnerScreen extends StatefulWidget {
-  const PartnerScreen({super.key});
-  @override
-  State<PartnerScreen> createState() => _PartnerScreenState();
+
+/// Sign out and go back to the login screen.
+Future<void> signOut(BuildContext context) async {
+  await Api.logout();
+  if (context.mounted) {
+    Navigator.of(context).pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const Boot()), (_) => false);
+  }
 }
 
-class _PartnerScreenState extends State<PartnerScreen> with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 4, vsync: this);
-  final _dashKey = GlobalKey<_DashboardTabState>();
-  final _leadsKey = GlobalKey<_LeadsTabState>();
-  Future<Map<String, dynamic>>? _status;
-
-  Future<Map<String, dynamic>> _loadStatus() async => (await Api.get('partner/status')) as Map<String, dynamic>;
-
+class PartnerGate extends StatefulWidget {
+  const PartnerGate({super.key});
   @override
-  void dispose() {
-    _tabs.dispose();
-    super.dispose();
-  }
+  State<PartnerGate> createState() => _PartnerGateState();
+}
 
-  void _afterSubmit() {
-    _dashKey.currentState?.reload();
-    _leadsKey.currentState?.reload();
-    _tabs.animateTo(2);
-  }
+class _PartnerGateState extends State<PartnerGate> {
+  late Future<Map<String, dynamic>> _f = _load();
+  Future<Map<String, dynamic>> _load() async => (await Api.get('partner/status')) as Map<String, dynamic>;
+  void _reload() => setState(() => _f = _load());
 
   @override
   Widget build(BuildContext context) {
-    if (!Api.loggedIn) {
-      _status = null;
-      return Scaffold(
-        appBar: AppBar(title: Text(t('Partner'))),
-        body: _PartnerIntro(onSignedIn: () => setState(() {})),
-      );
-    }
-    _status ??= _loadStatus();
     return FutureBuilder<Map<String, dynamic>>(
-      future: _status,
+      future: _f,
       builder: (context, snap) {
         if (snap.connectionState != ConnectionState.done) {
-          return Scaffold(appBar: AppBar(title: Text(t('Partner'))), body: const Center(child: CircularProgressIndicator()));
+          return const Scaffold(backgroundColor: brandCoal, body: Center(child: PulseLogo()));
         }
         if (snap.hasError) {
-          return Scaffold(
-            appBar: AppBar(title: Text(t('Partner'))),
-            body: Message('${snap.error}', action: t('Try again'), onTap: () => setState(() => _status = _loadStatus())),
-          );
+          if (!Api.loggedIn) {
+            WidgetsBinding.instance.addPostFrameCallback((_) => signOut(context));
+            return const Scaffold(body: SizedBox());
+          }
+          return Scaffold(body: Message('${snap.error}', action: t('Try again'), onTap: _reload));
         }
         final st = snap.data!;
-        if (st['is_partner'] != true) {
+        if (st['is_partner'] != true && st['can_join'] != true) {
           return Scaffold(
-            appBar: AppBar(title: Text(t('Partner'))),
-            body: _PartnerIntro(status: st, onSignedIn: () => setState(() => _status = _loadStatus())),
+            appBar: AppBar(title: const Text('Power Kothi'), actions: [IconButton(tooltip: t('Sign out'), onPressed: () => signOut(context), icon: const Icon(Icons.logout))]),
+            body: Message(t('Partner sign-up is by invitation. Ask Power Kothi to add your mobile number as a partner, then open this tab again.'), action: t('Try again'), onTap: _reload),
           );
         }
-        return _partnerTabs();
+        if (st['is_partner'] != true || st['kyc_done'] != true) return RegisterScreen(status: st, onDone: _reload);
+        return PartnerHome(status: st);
       },
     );
   }
-
-  Widget _partnerTabs() {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(t('Partner')),
-        bottom: TabBar(
-          controller: _tabs,
-          isScrollable: true,
-          tabAlignment: TabAlignment.start,
-          labelColor: Colors.white,
-          unselectedLabelColor: Colors.white70,
-          indicatorColor: brandLight,
-          indicatorWeight: 3,
-          tabs: [
-            Tab(icon: const Icon(Icons.dashboard), text: t('Dashboard')),
-            Tab(icon: const Icon(Icons.add_location_alt), text: t('Submit')),
-            Tab(icon: const Icon(Icons.timeline), text: t('My leads')),
-            Tab(icon: const Icon(Icons.account_balance_wallet), text: t('Wallet')),
-          ],
-        ),
-      ),
-      body: TabBarView(controller: _tabs, children: [
-        DashboardTab(key: _dashKey, onSubmit: () => _tabs.animateTo(1), onLeads: () => _tabs.animateTo(2), onWallet: () => _tabs.animateTo(3)),
-        SubmitLocationTab(onDone: _afterSubmit),
-        LeadsTab(key: _leadsKey),
-        const PartnerWalletTab(),
-      ]),
-    );
-  }
 }
 
-class _PartnerIntro extends StatefulWidget {
-  final VoidCallback onSignedIn;
-  final Map<String, dynamic>? status;
-  const _PartnerIntro({required this.onSignedIn, this.status});
+// ---------------------------------------------------------------------------
+// Registration: name, phone (login number), email, Aadhaar front/back, own photo
+// ---------------------------------------------------------------------------
+class RegisterScreen extends StatefulWidget {
+  final Map<String, dynamic> status;
+  final VoidCallback onDone;
+  const RegisterScreen({super.key, required this.status, required this.onDone});
   @override
-  State<_PartnerIntro> createState() => _PartnerIntroState();
+  State<RegisterScreen> createState() => _RegisterScreenState();
 }
 
-class _PartnerIntroState extends State<_PartnerIntro> {
-  late final _name = TextEditingController(text: '${Api.user?['name'] ?? ''}');
+class _RegisterScreenState extends State<RegisterScreen> {
+  final _form = GlobalKey<FormState>();
+  late final Map partner = (widget.status['partner'] as Map?) ?? {};
+  late final _name = TextEditingController(text: '${partner['name'] ?? Api.user?['name'] ?? ''}');
+  late final _email = TextEditingController(text: '${partner['email'] ?? Api.user?['email'] ?? ''}');
+  XFile? _front, _back, _photo;
   bool _busy = false;
 
-  Future<void> _join() async {
-    if (_name.text.trim().length < 2) {
-      toast(context, t('Enter your full name.'));
+  Map get _docs => (widget.status['docs'] as Map?) ?? {};
+  bool get _haveAadhaar => _docs['aadhaar'] == true;
+  bool get _havePhoto => _docs['photo'] == true;
+
+  Future<XFile?> _pick({bool selfie = false}) async {
+    ImageSource? src = ImageSource.camera;
+    if (!selfie) {
+      src = await showModalBottomSheet<ImageSource>(
+        context: context,
+        builder: (c) => SafeArea(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            ListTile(leading: const Icon(Icons.photo_camera), title: Text(t('Take photo')), onTap: () => Navigator.pop(c, ImageSource.camera)),
+            ListTile(leading: const Icon(Icons.photo_library), title: Text(t('Choose from gallery')), onTap: () => Navigator.pop(c, ImageSource.gallery)),
+          ]),
+        ),
+      );
+      if (src == null) return null;
+    }
+    try {
+      return await ImagePicker().pickImage(
+        source: src,
+        imageQuality: 75,
+        maxWidth: 1800,
+        preferredCameraDevice: selfie ? CameraDevice.front : CameraDevice.rear,
+      );
+    } catch (_) {
+      if (mounted) toast(context, t('Allow camera for Power Kothi to take photos.'));
+      return null;
+    }
+  }
+
+  Future<void> _save() async {
+    if (!_form.currentState!.validate()) return;
+    if (!_haveAadhaar && _front == null) {
+      toast(context, t('Add a photo of the front of your Aadhaar card.'));
+      return;
+    }
+    if (!_havePhoto && _photo == null) {
+      toast(context, t('Add your photo.'));
       return;
     }
     setState(() => _busy = true);
     try {
-      await Api.post('partner/join', {'name': _name.text.trim()});
-      widget.onSignedIn();
+      await Api.upload('partner/join', {
+        'name': _name.text.trim(),
+        'email': _email.text.trim(),
+      }, {
+        if (_front != null) 'aadhaar_front': _front!.path,
+        if (_back != null) 'aadhaar_back': _back!.path,
+        if (_photo != null) 'photo': _photo!.path,
+      });
+      final u = Map<String, dynamic>.from(Api.user ?? {});
+      u['name'] = _name.text.trim();
+      await Api.saveUser(u);
+      widget.onDone();
     } catch (e) {
-      if (mounted) toast(context, '$e');
+      if (mounted) {
+        toast(context, '$e');
+        setState(() => _busy = false);
+      }
     }
-    if (mounted) setState(() => _busy = false);
   }
 
   @override
   Widget build(BuildContext context) {
-    final st = widget.status;
-    final perLead = numOf(st?['per_lead']);
-    final steps = [
-      (Icons.add_location_alt, t('Find a site'), t('A petrol pump, hotel, parking or society with space for an EV charger.')),
-      (Icons.photo_camera, t('Submit in 1 minute'), t('Owner name, phone, property type, location and photos.')),
-      (Icons.timeline, t('Track every step'), t('See survey, approval, agreement and installation live in the app.')),
-      (Icons.currency_rupee, t('Earn when it goes live'), t('Money is added to your wallet and paid to your bank or UPI.')),
-    ];
-    return ListView(padding: const EdgeInsets.all(20), children: [
-      Container(
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(gradient: const LinearGradient(colors: [brandCoal, Color(0xFF3A2A1E)]), borderRadius: BorderRadius.circular(18)),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Icon(Icons.bolt, color: brandLight, size: 36),
+    final mobile = '${partner['mobile'] ?? Api.user?['mobile'] ?? ''}';
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(t('Your details')),
+        automaticallyImplyLeading: false,
+        actions: [IconButton(tooltip: t('Sign out'), onPressed: () => signOut(context), icon: const Icon(Icons.logout))],
+      ),
+      body: Form(
+        key: _form,
+        child: ListView(padding: const EdgeInsets.all(16), children: [
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(gradient: const LinearGradient(colors: [brandCoal, Color(0xFF4A2D16)]), borderRadius: BorderRadius.circular(16)),
+            child: Row(children: [
+              const Icon(Icons.badge, color: brandLight, size: 34),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(t('One-time registration'), style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800)),
+                  Text(t('Fill your details once to start submitting locations and earning.'), style: const TextStyle(color: Colors.white70)),
+                ]),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 18),
+          TextFormField(
+            controller: _name,
+            textCapitalization: TextCapitalization.words,
+            decoration: InputDecoration(labelText: t('Full name (as on Aadhaar)'), prefixIcon: const Icon(Icons.person), border: const OutlineInputBorder()),
+            validator: (v) => (v ?? '').trim().length < 2 ? t('Enter your full name.') : null,
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            initialValue: mobile,
+            enabled: false,
+            decoration: InputDecoration(labelText: t('Mobile number'), prefixText: '+91 ', prefixIcon: const Icon(Icons.call), border: const OutlineInputBorder()),
+          ),
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: _email,
+            keyboardType: TextInputType.emailAddress,
+            decoration: InputDecoration(labelText: '${t('Email')} (${t('optional')})', prefixIcon: const Icon(Icons.mail), border: const OutlineInputBorder()),
+            validator: (v) {
+              final s = (v ?? '').trim();
+              return s.isEmpty || RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(s) ? null : t('Email looks wrong. Leave it empty if you do not have one.');
+            },
+          ),
+          const SizedBox(height: 20),
+          Text(t('Aadhaar card'), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+          Text(t('Clear photo, all corners visible. Only Power Kothi staff can see it.'), style: const TextStyle(color: muted, fontSize: 12)),
           const SizedBox(height: 8),
-          Text(t('Earn with Power Kothi'), style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w800)),
-          const SizedBox(height: 6),
-          Text(t('Bring locations for new EV charging stations and earn for every charger that goes live.'), style: const TextStyle(color: Colors.white70, fontSize: 15)),
-          if (perLead > 0) ...[
-            const SizedBox(height: 10),
-            Text('${t('Earn up to')} ${rupees(perLead)} ${t('per charger')}', style: const TextStyle(color: brandLight, fontSize: 18, fontWeight: FontWeight.w800)),
-          ],
+          Row(children: [
+            Expanded(child: _docBox(t('Front'), _front, _haveAadhaar, () async {
+              final f = await _pick();
+              if (f != null) setState(() => _front = f);
+            })),
+            const SizedBox(width: 10),
+            Expanded(child: _docBox(t('Back'), _back, _haveAadhaar, () async {
+              final f = await _pick();
+              if (f != null) setState(() => _back = f);
+            })),
+          ]),
+          const SizedBox(height: 20),
+          Text(t('Your photo'), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+          Text(t('A clear selfie, face visible.'), style: const TextStyle(color: muted, fontSize: 12)),
+          const SizedBox(height: 8),
+          Center(
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: () async {
+                final f = await _pick(selfie: true);
+                if (f != null) setState(() => _photo = f);
+              },
+              child: CircleAvatar(
+                radius: 56,
+                backgroundColor: brandLight.withOpacity(.2),
+                backgroundImage: _photo != null ? FileImage(File(_photo!.path)) : null,
+                child: _photo != null
+                    ? null
+                    : Column(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(_havePhoto ? Icons.check_circle : Icons.add_a_photo, color: _havePhoto ? const Color(0xFF1F9D6B) : brandCopper, size: 30),
+                        const SizedBox(height: 4),
+                        Text(_havePhoto ? t('Uploaded') : t('Take selfie'), style: const TextStyle(fontSize: 12, color: brandCopper, fontWeight: FontWeight.w600)),
+                      ]),
+              ),
+            ),
+          ),
+          const SizedBox(height: 26),
+          FilledButton.icon(
+            style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
+            onPressed: _busy ? null : _save,
+            icon: _busy ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.check),
+            label: Text(_busy ? t('Saving…') : t('Save and continue')),
+          ),
         ]),
       ),
-      const SizedBox(height: 18),
-      for (var i = 0; i < steps.length; i++)
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: CircleAvatar(backgroundColor: brandLight.withOpacity(.25), child: Text('${i + 1}', style: const TextStyle(color: brandCopper, fontWeight: FontWeight.w800))),
-          title: Text(steps[i].$2, style: const TextStyle(fontWeight: FontWeight.w700)),
-          subtitle: Text(steps[i].$3),
-          trailing: Icon(steps[i].$1, color: muted),
-        ),
-      const SizedBox(height: 16),
-      if (st == null)
-        FilledButton.icon(
-          style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
-          icon: const Icon(Icons.login),
-          label: Text(t('Sign in to start')),
-          onPressed: () async {
-            if (await needLogin(context)) widget.onSignedIn();
-          },
-        )
-      else if (st['can_join'] == true) ...[
-        TextField(controller: _name, textCapitalization: TextCapitalization.words, decoration: InputDecoration(labelText: t('Your full name'), prefixIcon: const Icon(Icons.person), border: const OutlineInputBorder())),
-        const SizedBox(height: 10),
-        FilledButton.icon(
-          style: FilledButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14)),
-          icon: _busy ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Icon(Icons.handshake),
-          label: Text(t('Join as partner')),
-          onPressed: _busy ? null : _join,
-        ),
-      ] else
-        Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(color: ground, borderRadius: BorderRadius.circular(12)),
-          child: Text(t('Partner sign-up is by invitation. Ask Power Kothi to add your mobile number as a partner, then open this tab again.')),
-        ),
-    ]);
+    );
+  }
+
+  Widget _docBox(String label, XFile? file, bool already, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        height: 110,
+        clipBehavior: Clip.antiAlias,
+        decoration: BoxDecoration(border: Border.all(color: brandCopper, width: 1.5), borderRadius: BorderRadius.circular(12), color: brandLight.withOpacity(.08)),
+        child: file != null
+            ? Image.file(File(file.path), fit: BoxFit.cover, width: double.infinity)
+            : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Icon(already ? Icons.check_circle : Icons.credit_card, color: already ? const Color(0xFF1F9D6B) : brandCopper, size: 30),
+                const SizedBox(height: 6),
+                Text(already ? '$label · ${t('Uploaded')}' : '$label · ${t('Add photo')}', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+              ]),
+      ),
+    );
   }
 }
 
+// ---------------------------------------------------------------------------
+// Partner home: bottom tabs Dashboard · Submit · My leads · Wallet
+// ---------------------------------------------------------------------------
+class PartnerHome extends StatefulWidget {
+  final Map<String, dynamic> status;
+  const PartnerHome({super.key, required this.status});
+  @override
+  State<PartnerHome> createState() => _PartnerHomeState();
+}
+
+class _PartnerHomeState extends State<PartnerHome> {
+  int _tab = 0;
+  final _dashKey = GlobalKey<_DashboardTabState>();
+  final _leadsKey = GlobalKey<_LeadsTabState>();
+
+  void _go(int i) => setState(() => _tab = i);
+
+  void _afterSubmit() {
+    _dashKey.currentState?.reload();
+    _leadsKey.currentState?.reload();
+    _go(2);
+  }
+
+  void _showMe() {
+    final p = (widget.status['partner'] as Map?) ?? {};
+    final support = (Api.config['support'] as Map?) ?? {};
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (c) => SafeArea(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          ListTile(
+            leading: const CircleAvatar(backgroundColor: brandCoal, child: Icon(Icons.person, color: Colors.white)),
+            title: Text('${p['name'] ?? ''}', style: const TextStyle(fontWeight: FontWeight.w800)),
+            subtitle: Text('+91 ${p['mobile'] ?? ''}${p['emp_code'] != null ? '  ·  ${p['emp_code']}' : ''}'),
+          ),
+          const Divider(height: 1),
+          ListTile(
+            leading: const Icon(Icons.language),
+            title: Text(t('Language')),
+            trailing: DropdownButton<String>(
+              value: language.value,
+              underline: const SizedBox(),
+              items: const [DropdownMenuItem(value: 'en', child: Text('English')), DropdownMenuItem(value: 'hi', child: Text('हिन्दी'))],
+              onChanged: (v) {
+                if (v != null) {
+                  Navigator.pop(c);
+                  setLanguage(v);
+                }
+              },
+            ),
+          ),
+          if ('${support['phone'] ?? ''}'.isNotEmpty) ListTile(leading: const Icon(Icons.call), title: Text(t('Call support')), onTap: () => launchUrl(Uri.parse('tel:${support['phone']}'))),
+          if ('${support['whatsapp'] ?? ''}'.isNotEmpty)
+            ListTile(leading: const Icon(Icons.chat), title: const Text('WhatsApp'), onTap: () => launchUrl(Uri.parse('https://wa.me/91${support['whatsapp']}'), mode: LaunchMode.externalApplication)),
+          ListTile(
+            leading: const Icon(Icons.logout, color: Colors.red),
+            title: Text(t('Sign out')),
+            onTap: () {
+              Navigator.pop(c);
+              signOut(context);
+            },
+          ),
+        ]),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final titles = [t('Dashboard'), t('Submit a location'), t('My leads'), t('Wallet')];
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(titles[_tab]),
+        actions: [IconButton(tooltip: t('My account'), onPressed: _showMe, icon: const Icon(Icons.account_circle))],
+      ),
+      body: IndexedStack(index: _tab, children: [
+        DashboardTab(key: _dashKey, onSubmit: () => _go(1), onLeads: () => _go(2), onWallet: () => _go(3)),
+        SubmitLocationTab(onDone: _afterSubmit),
+        LeadsTab(key: _leadsKey),
+        const PartnerWalletTab(),
+      ]),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _tab,
+        onDestinationSelected: _go,
+        destinations: [
+          NavigationDestination(icon: const Icon(Icons.dashboard), label: t('Dashboard')),
+          NavigationDestination(icon: const Icon(Icons.add_location_alt), label: t('Submit')),
+          NavigationDestination(icon: const Icon(Icons.timeline), label: t('My leads')),
+          NavigationDestination(icon: const Icon(Icons.account_balance_wallet), label: t('Wallet')),
+        ],
+      ),
+    );
+  }
+}
 // ---------------------------------------------------------------------------
 // S-1 Dashboard: earnings, pipeline, leaderboard
 // ---------------------------------------------------------------------------

@@ -5,7 +5,9 @@ import '../main.dart';
 import '../widgets.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  /// Set when login is the app's first screen; otherwise the screen pops with true.
+  final VoidCallback? onDone;
+  const LoginScreen({super.key, this.onDone});
   @override
   State<LoginScreen> createState() => _LoginScreenState();
 }
@@ -35,7 +37,12 @@ class _LoginScreenState extends State<LoginScreen> {
       final r = await Api.post('auth/verify-otp', {'mobile': _mobile.text.trim(), 'otp': _otp.text.trim()}) as Map<String, dynamic>;
       await Api.saveLogin('${r['token']}', r['user'] as Map<String, dynamic>);
       await registerPush();
-      if (mounted) Navigator.pop(context, true);
+      if (!mounted) return;
+      if (widget.onDone != null) {
+        widget.onDone!();
+      } else {
+        Navigator.pop(context, true);
+      }
     } catch (e) {
       if (mounted) toast(context, '$e');
     }
@@ -45,10 +52,28 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(t('Sign in'))),
-      body: Padding(
+      appBar: widget.onDone == null ? AppBar(title: Text(t('Sign in'))) : null,
+      body: SafeArea(
+        child: ListView(
         padding: const EdgeInsets.all(20),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        children: [
+          if (widget.onDone != null) ...[
+            const SizedBox(height: 30),
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 26),
+              decoration: BoxDecoration(color: brandCoal, borderRadius: BorderRadius.circular(20)),
+              child: Column(children: [
+                const PulseLogo(width: 170),
+                const SizedBox(height: 10),
+                Text(t('Partner app'), style: const TextStyle(color: brandLight, fontSize: 16, fontWeight: FontWeight.w700)),
+              ]),
+            ),
+            const SizedBox(height: 26),
+            Text(t('Sign in with your mobile number'), style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
+            const SizedBox(height: 4),
+            Text(t('We send an OTP to verify it is you.'), style: const TextStyle(color: muted)),
+            const SizedBox(height: 18),
+          ],
           TextField(controller: _mobile, enabled: !_sent, keyboardType: TextInputType.phone, maxLength: 10, autofillHints: const [AutofillHints.telephoneNumberNational], decoration: InputDecoration(labelText: t('Mobile number'), prefixText: '+91 ', border: const OutlineInputBorder())),
           if (_sent && Api.config['otp_test_mode'] == true)
             Container(
@@ -70,7 +95,8 @@ class _LoginScreenState extends State<LoginScreen> {
                       }),
               child: Text(t('Change number')),
             ),
-        ]),
+        ],
+        ),
       ),
     );
   }
