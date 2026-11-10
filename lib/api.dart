@@ -4,7 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// Change at build time: flutter build apk --dart-define=API_BASE=https://yourdomain.com/api/v1/
 const String apiBase = String.fromEnvironment('API_BASE', defaultValue: 'https://erp.powerkothi.in/power/power-kothi/api/v1/');
-const String appVersion = '1.0.0';
+const String appVersion = '1.1.0';
 
 class ApiError implements Exception {
   final String message;

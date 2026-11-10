@@ -3,6 +3,9 @@
 The app connects to `https://erp.powerkothi.in/power/power-kothi/api/v1/`.
 To use another server, build with `--dart-define=API_BASE=https://yourdomain.com/api/v1/`.
 
+## Partner section (v1.1.0)
+New "Partner" tab: Dashboard (earnings, lead pipeline, leaderboard), Submit location (owner, phone, property type, current location, camera photos), My leads (live status), Wallet & payouts. Server routes are listed in `docs/PARTNER_API.md`.
+
 ## Make the APK online (no Flutter needed)
 1. Create a free private repository on GitHub.
 2. Upload everything in this folder, including the hidden `.github` folder.

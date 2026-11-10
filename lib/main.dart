@@ -7,6 +7,7 @@ import 'widgets.dart';
 import 'screens/favourites.dart';
 import 'screens/home.dart';
 import 'screens/onboarding.dart';
+import 'screens/partner.dart';
 import 'screens/profile.dart';
 import 'screens/route_plan.dart';
 
@@ -107,7 +108,13 @@ class _ShellState extends State<Shell> {
 
   @override
   Widget build(BuildContext context) {
-    final pages = [const HomeScreen(), if (_tab == 1) const FavouritesScreen() else const SizedBox(), const RoutePlanScreen(), if (_tab == 3) const ProfileScreen() else const SizedBox()];
+    final pages = [
+      const HomeScreen(),
+      if (_tab == 1) const FavouritesScreen() else const SizedBox(),
+      const RoutePlanScreen(),
+      if (_tab == 3) const PartnerScreen() else const SizedBox(),
+      if (_tab == 4) const ProfileScreen() else const SizedBox(),
+    ];
     return Scaffold(
       body: IndexedStack(index: _tab, children: pages),
       bottomNavigationBar: NavigationBar(
@@ -117,6 +124,7 @@ class _ShellState extends State<Shell> {
           NavigationDestination(icon: const Icon(Icons.ev_station), label: t('Find')),
           NavigationDestination(icon: const Icon(Icons.favorite), label: t('Saved')),
           NavigationDestination(icon: const Icon(Icons.alt_route), label: t('Route')),
+          NavigationDestination(icon: const Icon(Icons.handshake), label: t('Partner')),
           NavigationDestination(icon: const Icon(Icons.person), label: t('Profile')),
         ],
       ),
