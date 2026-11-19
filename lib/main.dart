@@ -1,31 +1,15 @@
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'api.dart';
 import 'i18n.dart';
 import 'widgets.dart';
-import 'screens/favourites.dart';
-import 'screens/home.dart';
-import 'screens/onboarding.dart';
-import 'screens/profile.dart';
-import 'screens/route_plan.dart';
+import 'screens/login.dart';
+import 'screens/partner.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Api.init();
   loadLanguage();
-  await registerPush();
   runApp(const EvApp());
-}
-
-/// Push works once google-services.json is added (see README). The app runs fine without it.
-Future<void> registerPush() async {
-  try {
-    await Firebase.initializeApp();
-    await FirebaseMessaging.instance.requestPermission();
-    final tok = await FirebaseMessaging.instance.getToken();
-    if (tok != null && Api.loggedIn) await Api.post('profile/device', {'fcm_token': tok});
-  } catch (_) {}
 }
 
 class EvApp extends StatelessWidget {
@@ -37,7 +21,7 @@ class EvApp extends StatelessWidget {
       valueListenable: language,
       builder: (context, lang, _) => MaterialApp(
         key: ValueKey(lang),
-        title: 'Power Kothi',
+        title: 'Power Kothi Partner',
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           colorScheme: ColorScheme.fromSeed(seedColor: brandCopper, primary: brandCopper, secondary: brandLight, surface: Colors.white),
@@ -89,37 +73,10 @@ class _BootState extends State<Boot> {
         if (mustUpdate) {
           return Scaffold(body: Message('${t('Update required')}\n${t('Please update the app to continue.')}'));
         }
-        if (Api.prefs.getBool('seen_intro') != true) return const Onboarding();
-        return const Shell();
+        // Partner app: login with OTP → one-time registration → dashboard
+        if (!Api.loggedIn) return LoginScreen(onDone: () => setState(() {}));
+        return const PartnerGate();
       },
-    );
-  }
-}
-
-class Shell extends StatefulWidget {
-  const Shell({super.key});
-  @override
-  State<Shell> createState() => _ShellState();
-}
-
-class _ShellState extends State<Shell> {
-  int _tab = 0;
-
-  @override
-  Widget build(BuildContext context) {
-    final pages = [const HomeScreen(), if (_tab == 1) const FavouritesScreen() else const SizedBox(), const RoutePlanScreen(), if (_tab == 3) const ProfileScreen() else const SizedBox()];
-    return Scaffold(
-      body: IndexedStack(index: _tab, children: pages),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _tab,
-        onDestinationSelected: (i) => setState(() => _tab = i),
-        destinations: [
-          NavigationDestination(icon: const Icon(Icons.ev_station), label: t('Find')),
-          NavigationDestination(icon: const Icon(Icons.favorite), label: t('Saved')),
-          NavigationDestination(icon: const Icon(Icons.alt_route), label: t('Route')),
-          NavigationDestination(icon: const Icon(Icons.person), label: t('Profile')),
-        ],
-      ),
     );
   }
 }

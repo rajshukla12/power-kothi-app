@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../api.dart';
@@ -52,7 +51,6 @@ class _RoutePlanScreenState extends State<RoutePlanScreen> {
     final items = _cities.map((c) => DropdownMenuItem<dynamic>(value: c['id'], child: Text('${c['name']}'))).toList();
     final r = _result;
     final stations = ((r?['stations'] as List?) ?? []).cast<dynamic>();
-    final path = ((r?['path'] as List?) ?? []).map((p) => LatLng((p[0] as num).toDouble(), (p[1] as num).toDouble())).toList();
     return Scaffold(
       appBar: AppBar(title: Text(t('Plan a trip'))),
       body: ListView(padding: const EdgeInsets.all(14), children: [
@@ -63,21 +61,10 @@ class _RoutePlanScreenState extends State<RoutePlanScreen> {
         FilledButton(onPressed: _busy ? null : _go, child: Text(t('Show stations'))),
         if (r != null) ...[
           const SizedBox(height: 12),
-          SizedBox(
-            height: 240,
-            child: FlutterMap(
-              key: ValueKey(path.length),
-              options: MapOptions(initialCameraFit: CameraFit.bounds(bounds: LatLngBounds.fromPoints(path), padding: const EdgeInsets.all(24))),
-              children: [
-                TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', userAgentPackageName: 'in.powerkothi.app'),
-                PolylineLayer(polylines: [Polyline(points: path, strokeWidth: 4, color: brandCopper)]),
-                MarkerLayer(markers: [for (final s in stations) Marker(point: LatLng((s['lat'] as num).toDouble(), (s['lng'] as num).toDouble()), width: 30, height: 30, child: Icon(Icons.location_on, color: statusColor(s['status'] as String?), size: 30))]),
-              ],
-            ),
-          ),
+          Text('${stations.length} ${t('stations on this route')}', style: const TextStyle(fontWeight: FontWeight.w700)),
           TextButton.icon(
             icon: const Icon(Icons.open_in_new),
-            label: const Text('Open full route in Google Maps'),
+            label: const Text('Open route in Google Maps'),
             onPressed: () => launchUrl(Uri.parse('https://www.google.com/maps/dir/?api=1&origin=${_a!.latitude},${_a!.longitude}&destination=${_b!.latitude},${_b!.longitude}'), mode: LaunchMode.externalApplication),
           ),
           if (r['path_type'] == 'straight') const Text('Stations are matched to a straight line between the two places.', style: TextStyle(color: muted, fontSize: 13)),

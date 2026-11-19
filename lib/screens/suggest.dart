@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_map/flutter_map.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:latlong2/latlong.dart';
 import '../api.dart';
@@ -15,8 +14,8 @@ class SuggestScreen extends StatefulWidget {
 class _SuggestScreenState extends State<SuggestScreen> {
   final _name = TextEditingController();
   final _conn = TextEditingController();
-  final _map = MapController();
-  LatLng _pin = const LatLng(26.4499, 80.3319);
+  LatLng? _pin;
+  bool _locating = false;
   XFile? _photo;
   XFile? _doc;
   String _docType = 'Electricity bill';
@@ -26,12 +25,18 @@ class _SuggestScreenState extends State<SuggestScreen> {
   @override
   void initState() {
     super.initState();
-    currentLocation().then((p) {
-      if (p != null && mounted) {
-        setState(() => _pin = p);
-        _map.move(p, 15);
-      }
+    _locate();
+  }
+
+  Future<void> _locate() async {
+    setState(() => _locating = true);
+    final p = await currentLocation();
+    if (!mounted) return;
+    setState(() {
+      _locating = false;
+      if (p != null) _pin = p;
     });
+    if (p == null) toast(context, 'Turn on location (GPS) and allow it for Power Kothi.');
   }
 
   Future<void> _send() async {
@@ -39,11 +44,15 @@ class _SuggestScreenState extends State<SuggestScreen> {
       toast(context, 'Enter the station name.');
       return;
     }
+    if (_pin == null) {
+      toast(context, 'Tap “Use current location” while standing at the station.');
+      return;
+    }
     setState(() => _busy = true);
     try {
       final r = await Api.upload(
         'stations/suggest',
-        {'name': _name.text.trim(), 'lat': '${_pin.latitude}', 'lng': '${_pin.longitude}', 'connectors': _conn.text, if (_doc != null) 'doc_type1': _docType},
+        {'name': _name.text.trim(), 'lat': '${_pin!.latitude}', 'lng': '${_pin!.longitude}', 'connectors': _conn.text, if (_doc != null) 'doc_type1': _docType},
         {if (_photo != null) 'photo': _photo!.path, if (_doc != null) 'doc1': _doc!.path},
       );
       if (r is Map && r['doc_error'] != null && mounted) toast(context, '${r['doc_error']}');
@@ -68,19 +77,12 @@ class _SuggestScreenState extends State<SuggestScreen> {
         const SizedBox(height: 10),
         TextField(controller: _conn, decoration: const InputDecoration(labelText: 'Connector types', hintText: 'CCS2, Type 2', border: OutlineInputBorder())),
         const SizedBox(height: 10),
-        const Text('Tap the map to place the pin.'),
-        const SizedBox(height: 6),
-        SizedBox(
-          height: 260,
-          child: FlutterMap(
-            mapController: _map,
-            options: MapOptions(initialCenter: _pin, initialZoom: 14, onTap: (_, p) => setState(() => _pin = p)),
-            children: [
-              TileLayer(urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', userAgentPackageName: 'in.powerkothi.app'),
-              MarkerLayer(markers: [Marker(point: _pin, width: 36, height: 36, child: const Icon(Icons.location_on, size: 36, color: brandCoal))]),
-            ],
-          ),
+        OutlinedButton.icon(
+          onPressed: _locating ? null : _locate,
+          icon: _locating ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.my_location),
+          label: Text(_pin == null ? 'Use current location' : 'Location captured · tap to update'),
         ),
+        if (_pin != null) Padding(padding: const EdgeInsets.only(top: 4), child: Text('${_pin!.latitude.toStringAsFixed(6)}, ${_pin!.longitude.toStringAsFixed(6)}', style: const TextStyle(color: muted, fontSize: 12))),
         const SizedBox(height: 8),
         OutlinedButton.icon(
           icon: const Icon(Icons.photo_camera),

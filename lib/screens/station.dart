@@ -1,6 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:share_plus/share_plus.dart';
+import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../api.dart';
 import '../i18n.dart';
@@ -71,7 +71,10 @@ class _StationScreenState extends State<StationScreen> {
           appBar: AppBar(
             title: Text('${s['name']}'),
             actions: [
-              IconButton(tooltip: t('Share'), icon: const Icon(Icons.share), onPressed: () => Share.share('${s['name']}\n${s['url']}')),
+              IconButton(tooltip: t('Share'), icon: const Icon(Icons.share), onPressed: () {
+                Clipboard.setData(ClipboardData(text: '${s['name']}\n${s['url']}'));
+                toast(context, t('Link copied'));
+              }),
               IconButton(tooltip: t('Saved'), icon: Icon(_fav == true ? Icons.favorite : Icons.favorite_border), onPressed: _toggleFav),
             ],
           ),
