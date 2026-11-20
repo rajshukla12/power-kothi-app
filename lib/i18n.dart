@@ -179,6 +179,7 @@ const Map<String, String> _hi = {
   'Your full Aadhaar number is not saved. Only the last 4 digits are kept.': 'आपका पूरा आधार नंबर सेव नहीं होता। सिर्फ़ आख़िरी 4 अंक रखे जाते हैं।',
   'Verified': 'वेरीफाइड',
   'Not verified': 'वेरीफाई नहीं',
+  'Aadhaar number saved': 'आधार नंबर सेव है',
 };
 
 String t(String en) => language.value == 'hi' ? (_hi[en] ?? en) : en;

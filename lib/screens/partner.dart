@@ -160,7 +160,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
   late final Map partner = (widget.status['partner'] as Map?) ?? {};
   late final _name = TextEditingController(text: '${partner['name'] ?? Api.user?['name'] ?? ''}');
   late final _email = TextEditingController(text: '${partner['email'] ?? Api.user?['email'] ?? ''}');
-  XFile? _front, _back, _photo;
+  final _aadhaar = TextEditingController();
+  XFile? _photo;
   bool _busy = false;
 
   Map get _docs => (widget.status['docs'] as Map?) ?? {};
@@ -196,10 +197,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
 
   Future<void> _save() async {
     if (!_form.currentState!.validate()) return;
-    if (!_haveAadhaar && _front == null) {
-      toast(context, t('Add a photo of the front of your Aadhaar card.'));
-      return;
-    }
     if (!_havePhoto && _photo == null) {
       toast(context, t('Add your photo.'));
       return;
@@ -209,9 +206,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
       await Api.upload('partner/join', {
         'name': _name.text.trim(),
         'email': _email.text.trim(),
+        if (!_haveAadhaar) 'aadhaar': _aadhaar.text.replaceAll(RegExp(r'\D'), ''),
       }, {
-        if (_front != null) 'aadhaar_front': _front!.path,
-        if (_back != null) 'aadhaar_back': _back!.path,
         if (_photo != null) 'photo': _photo!.path,
       });
       final u = Map<String, dynamic>.from(Api.user ?? {});
@@ -276,20 +272,24 @@ class _RegisterScreenState extends State<RegisterScreen> {
             },
           ),
           const SizedBox(height: 20),
-          Text(t('Aadhaar card'), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
-          Text(t('Clear photo, all corners visible. Only Power Kothi staff can see it.'), style: const TextStyle(color: muted, fontSize: 12)),
-          const SizedBox(height: 8),
-          Row(children: [
-            Expanded(child: _docBox(t('Front'), _front, _haveAadhaar, () async {
-              final f = await _pick();
-              if (f != null) setState(() => _front = f);
-            })),
-            const SizedBox(width: 10),
-            Expanded(child: _docBox(t('Back'), _back, _haveAadhaar, () async {
-              final f = await _pick();
-              if (f != null) setState(() => _back = f);
-            })),
-          ]),
+          if (_haveAadhaar)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.check_circle, color: Color(0xFF1F9D6B)),
+              title: Text(t('Aadhaar number saved')),
+            )
+          else
+            TextFormField(
+              controller: _aadhaar,
+              keyboardType: TextInputType.number,
+              maxLength: 14,
+              decoration: InputDecoration(
+                  labelText: t('Aadhaar number'), hintText: '1234 5678 9012', prefixIcon: const Icon(Icons.badge), border: const OutlineInputBorder(), counterText: ''),
+              validator: (v) {
+                final d = (v ?? '').replaceAll(RegExp(r'\D'), '');
+                return RegExp(r'^[2-9][0-9]{11}$').hasMatch(d) ? null : t('Enter all 12 digits of your Aadhaar.');
+              },
+            ),
           const SizedBox(height: 20),
           Text(t('Your photo'), style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
           Text(t('A clear selfie, face visible.'), style: const TextStyle(color: muted, fontSize: 12)),
@@ -323,25 +323,6 @@ class _RegisterScreenState extends State<RegisterScreen> {
             label: Text(_busy ? t('Saving…') : t('Save and continue')),
           ),
         ]),
-      ),
-    );
-  }
-
-  Widget _docBox(String label, XFile? file, bool already, VoidCallback onTap) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        height: 110,
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(border: Border.all(color: brandCopper, width: 1.5), borderRadius: BorderRadius.circular(12), color: brandLight.withOpacity(.08)),
-        child: file != null
-            ? Image.file(File(file.path), fit: BoxFit.cover, width: double.infinity)
-            : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                Icon(already ? Icons.check_circle : Icons.credit_card, color: already ? const Color(0xFF1F9D6B) : brandCopper, size: 30),
-                const SizedBox(height: 6),
-                Text(already ? '$label · ${t('Uploaded')}' : '$label · ${t('Add photo')}', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
-              ]),
       ),
     );
   }
